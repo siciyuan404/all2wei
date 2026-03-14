@@ -1,0 +1,43 @@
+# 可执行文件
+*.exe
+*.exe~
+all2wei
+
+# 数据库文件
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# 配置文件（包含敏感信息）
+config.yaml
+config.yml
+.env
+.env.local
+.env.*.local
+
+# 上传文件目录
+uploads/
+
+# 日志文件
+*.log
+logs/
+
+# Go 相关
+vendor/
+
+# 前端
+web/node_modules/
+web/dist/
+web/dist-ssr/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+*~
+
+# 系统文件
+Thumbs.db
