@@ -1,0 +1,7 @@
+/* 保留基础字体和渲染设置，但不覆盖 App.css 的主题变量 */
+:root {
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
