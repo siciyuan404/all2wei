@@ -31,6 +31,22 @@ var videoExts = map[string]bool{
 	".flv":  true,
 	".wmv":  true,
 	".m4v":  true,
+	".rmvb": true,
+	".rm":   true,
+	".ts":   true,
+	".m2ts": true,
+	".3gp":  true,
+	".mpg":  true,
+	".mpeg": true,
+	".vob":  true,
+}
+
+var directPlayExts = map[string]bool{
+	".mp4":  true,
+	".webm": true,
+	".m4v":  true,
+	".ogg":  true,
+	".ogv":  true,
 }
 
 // 字幕扩展名
@@ -41,9 +57,10 @@ var subtitleExts = map[string]bool{
 
 type MaterialHandler struct {
 	materialRepo *repository.MaterialRepository
-	storageSvc   service.StorageService
-	minioSvc     *service.MinIOService // 可选，用于同步功能
-	jwtCfg       *config.JWTConfig
+	storageSvc service.StorageService
+	minioSvc  *service.MinIOService // 可选，用于同步功能
+	jwtCfg    *config.JWTConfig
+	sourceCfg *config.VideoSourceConfig
 }
 
 func NewMaterialHandler(materialRepo *repository.MaterialRepository, storageSvc service.StorageService, jwtCfg *config.JWTConfig) *MaterialHandler {
@@ -54,9 +71,26 @@ func NewMaterialHandler(materialRepo *repository.MaterialRepository, storageSvc 
 	}
 }
 
+// SetVideoSource 设置视频源配置
+func (h *MaterialHandler) SetVideoSource(sourceCfg *config.VideoSourceConfig) {
+	h.sourceCfg = sourceCfg
+}
+
 // SetMinIOService 设置 MinIO 服务（用于同步功能）
 func (h *MaterialHandler) SetMinIOService(minioSvc *service.MinIOService) {
 	h.minioSvc = minioSvc
+}
+
+// extractFolder 从 videoKey 中提取文件夹名
+func extractFolder(videoKey string) string {
+	parts := strings.Split(videoKey, "/")
+	if len(parts) >= 3 {
+		return strings.Join(parts[:len(parts)-1], "/")
+	}
+	if len(parts) == 2 {
+		return parts[0]
+	}
+	return ""
 }
 
 // Upload 上传视频和字幕
@@ -108,6 +142,7 @@ func (h *MaterialHandler) Upload(c *gin.Context) {
 		UserID:      userID,
 		Title:       title,
 		Description: description,
+		Folder:      extractFolder(videoKey),
 		VideoKey:    videoKey,
 		SubtitleKey: subtitleKey,
 	}
@@ -123,35 +158,33 @@ func (h *MaterialHandler) Upload(c *gin.Context) {
 // List 获取用户的学习资料列表
 func (h *MaterialHandler) List(c *gin.Context) {
 	userID := c.GetUint("userID")
+	folder := c.Query("folder")
 
-	materials, err := h.materialRepo.GetByUserID(userID)
+	var materials []model.Material
+	var err error
+
+	if folder != "" {
+		materials, err = h.materialRepo.GetByUserIDAndFolder(userID, folder)
+	} else {
+		materials, err = h.materialRepo.GetByUserID(userID)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get materials"})
 		return
 	}
 
-	// 生成预签名 URL（优先使用 MinIO）
 	ctx := c.Request.Context()
 	var responses []gin.H
 	for _, m := range materials {
-		var videoURL string
-		var err error
-		if h.minioSvc != nil {
-			videoURL, err = h.minioSvc.GetPresignedURL(ctx, m.VideoKey, 24*time.Hour)
-			if err != nil {
-				log.Printf("[List] MinIO URL generation failed for video %s: %v", m.VideoKey, err)
-			}
-		}
+		videoURL, _ := h.storageSvc.GetPresignedURL(ctx, m.VideoKey, 24*time.Hour)
 		if videoURL == "" {
-			videoURL, _ = h.storageSvc.GetPresignedURL(ctx, m.VideoKey, 24*time.Hour)
-			if videoURL == "" {
-				log.Printf("[List] Failed to generate video URL for material %d, videoKey=%s", m.ID, m.VideoKey)
-			}
+			log.Printf("[List] Failed to generate video URL for material %d, videoKey=%s", m.ID, m.VideoKey)
 		}
 		responses = append(responses, gin.H{
 			"id":           m.ID,
 			"title":        m.Title,
 			"description":  m.Description,
+			"folder":       m.Folder,
 			"video_url":    videoURL,
 			"has_subtitle": m.SubtitleKey != "",
 			"created_at":   m.CreatedAt,
@@ -159,6 +192,44 @@ func (h *MaterialHandler) List(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, responses)
+}
+
+// Folders 获取用户的文件夹列表
+func (h *MaterialHandler) Folders(c *gin.Context) {
+	userID := c.GetUint("userID")
+
+	folders, err := h.materialRepo.GetFolders(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get folders"})
+		return
+	}
+
+	type FolderInfo struct {
+		Name      string `json:"name"`
+		Count     int    `json:"count"`
+	}
+
+	counts := make(map[string]int)
+	allMaterials, _ := h.materialRepo.GetByUserID(userID)
+	for _, m := range allMaterials {
+		if m.Folder != "" {
+			counts[m.Folder]++
+		}
+	}
+
+	var result []FolderInfo
+	for _, f := range folders {
+		result = append(result, FolderInfo{
+			Name:  f,
+			Count: counts[f],
+		})
+	}
+
+	if result == nil {
+		result = []FolderInfo{}
+	}
+
+	c.JSON(http.StatusOK, result)
 }
 
 // Get 获取单个学习资料详情
@@ -251,7 +322,6 @@ func (h *MaterialHandler) Delete(c *gin.Context) {
 
 // StreamVideo 代理视频流（解决 MinIO 跨域/端口问题，支持 FFmpeg 转码）
 func (h *MaterialHandler) StreamVideo(c *gin.Context) {
-	// 从 URL 参数获取 token（视频标签无法携带 Authorization Header）
 	token := c.Query("token")
 	if token == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "token required"})
@@ -282,32 +352,58 @@ func (h *MaterialHandler) StreamVideo(c *gin.Context) {
 		return
 	}
 
-	// 检查文件格式
 	ext := strings.ToLower(filepath.Ext(material.VideoKey))
-	needsTranscode := ext == ".avi" || ext == ".mkv" || ext == ".mov" || ext == ".wmv" || ext == ".flv"
+	forceTranscode := c.Query("transcode") == "1"
+	directPlay := !forceTranscode && directPlayExts[ext]
 
-	// 获取 MinIO 预签名 URL
+	localPath := h.storageSvc.GetLocalPath(material.VideoKey)
+
+	if !directPlay {
+		if localPath != "" {
+			h.streamTranscodedLocalVideo(c, localPath)
+		} else {
+			videoURL := h.resolveVideoURL(c, material.VideoKey)
+			if videoURL == "" {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get video URL"})
+				return
+			}
+			h.streamTranscodedVideo(c, videoURL)
+		}
+		return
+	}
+
+	if localPath != "" {
+		c.File(localPath)
+		return
+	}
+
+	videoURL := h.resolveVideoURL(c, material.VideoKey)
+	if videoURL == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get video URL"})
+		return
+	}
+	h.streamDirectVideo(c, c.Request.Context(), videoURL, ext)
+}
+
+// resolveVideoURL 获取视频的完整访问 URL
+func (h *MaterialHandler) resolveVideoURL(c *gin.Context, videoKey string) string {
 	ctx := c.Request.Context()
 	var videoURL string
-	if h.minioSvc != nil {
-		videoURL, err = h.minioSvc.GetPresignedURL(ctx, material.VideoKey, 1*time.Hour)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate video URL"})
-			return
+
+	videoURL, _ = h.storageSvc.GetPresignedURL(ctx, videoKey, 1*time.Hour)
+	if videoURL == "" && h.minioSvc != nil {
+		videoURL, _ = h.minioSvc.GetPresignedURL(ctx, videoKey, 1*time.Hour)
+	}
+
+	if videoURL != "" && !strings.HasPrefix(videoURL, "http") {
+		scheme := "http"
+		if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
+			scheme = "https"
 		}
-	} else {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "storage not available"})
-		return
+		videoURL = fmt.Sprintf("%s://%s%s", scheme, c.Request.Host, videoURL)
 	}
 
-	// 如果需要转码，使用 FFmpeg
-	if needsTranscode {
-		h.streamTranscodedVideo(c, videoURL)
-		return
-	}
-
-	// 直接代理（MP4/WebM 等浏览器支持格式）
-	h.streamDirectVideo(c, ctx, videoURL, ext)
+	return videoURL
 }
 
 // streamDirectVideo 直接代理视频流
@@ -375,19 +471,6 @@ func (h *MaterialHandler) streamDirectVideo(c *gin.Context, ctx context.Context,
 
 // streamTranscodedVideo 使用 FFmpeg 实时转码为 MP4
 func (h *MaterialHandler) streamTranscodedVideo(c *gin.Context, videoURL string) {
-	// 设置响应头（转码后为 MP4）
-	c.Header("Content-Type", "video/mp4")
-	c.Status(http.StatusOK)
-
-	// FFmpeg 命令：从 URL 读取，转码为 MP4 流
-	// -i input: 输入 URL
-	// -c:v libx264: 视频编码为 H.264
-	// -preset fast: 快速编码
-	// -crf 23: 质量参数
-	// -c:a aac: 音频编码为 AAC
-	// -movflags frag_keyframe+empty_moov: 支持流式传输
-	// -f mp4: 输出格式 MP4
-	// -: 输出到 stdout
 	cmd := exec.Command("ffmpeg",
 		"-i", videoURL,
 		"-c:v", "libx264",
@@ -400,29 +483,71 @@ func (h *MaterialHandler) streamTranscodedVideo(c *gin.Context, videoURL string)
 		"-",
 	)
 
-	// 设置 stderr 丢弃（避免阻塞）
 	cmd.Stderr = os.Stderr
 
-	// 获取 stdout
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		log.Printf("[FFmpeg] Failed to create stdout pipe: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to setup transcoding"})
 		return
 	}
 
-	// 启动 FFmpeg
 	if err := cmd.Start(); err != nil {
 		log.Printf("[FFmpeg] Failed to start: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ffmpeg not available, transcoding failed"})
 		return
 	}
 
-	// 流式传输到客户端
+	c.Header("Content-Type", "video/mp4")
+	c.Status(http.StatusOK)
+
 	_, err = io.Copy(c.Writer, stdout)
 	if err != nil {
 		log.Printf("[FFmpeg] Stream error: %v", err)
 	}
 
-	// 等待 FFmpeg 结束
+	if err := cmd.Wait(); err != nil {
+		log.Printf("[FFmpeg] Process error: %v", err)
+	}
+}
+
+// streamTranscodedLocalVideo 使用 FFmpeg 实时转码本地文件为 MP4
+func (h *MaterialHandler) streamTranscodedLocalVideo(c *gin.Context, localPath string) {
+	cmd := exec.Command("ffmpeg",
+		"-i", localPath,
+		"-c:v", "libx264",
+		"-preset", "fast",
+		"-crf", "23",
+		"-c:a", "aac",
+		"-b:a", "128k",
+		"-movflags", "frag_keyframe+empty_moov",
+		"-f", "mp4",
+		"-",
+	)
+
+	cmd.Stderr = os.Stderr
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Printf("[FFmpeg] Failed to create stdout pipe: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to setup transcoding"})
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		log.Printf("[FFmpeg] Failed to start: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "ffmpeg not available, transcoding failed"})
+		return
+	}
+
+	c.Header("Content-Type", "video/mp4")
+	c.Status(http.StatusOK)
+
+	_, err = io.Copy(c.Writer, stdout)
+	if err != nil {
+		log.Printf("[FFmpeg] Stream error: %v", err)
+	}
+
 	if err := cmd.Wait(); err != nil {
 		log.Printf("[FFmpeg] Process error: %v", err)
 	}
@@ -472,7 +597,11 @@ func (h *MaterialHandler) GetSubtitle(c *gin.Context) {
 
 	// 如果 MinIO 读取失败，尝试本地文件
 	if len(buf) == 0 {
-		subtitlePath := filepath.Join("uploads", filepath.Base(material.SubtitleKey))
+		subtitlePath := h.storageSvc.GetLocalPath(material.SubtitleKey)
+		if subtitlePath == "" {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to open subtitle file"})
+			return
+		}
 		file, err := os.Open(subtitlePath)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to open subtitle file"})
@@ -537,7 +666,7 @@ func (h *MaterialHandler) Sync(c *gin.Context) {
 			log.Printf("[Sync] Found video: %s (baseKey: %s)", obj.Key, baseKey)
 		} else if subtitleExts[ext] {
 			info.subtitleKey = obj.Key
-			log.Printf("[Sync] Found subtitle: %s (baseKey: %s)", obj.Key, baseKey)
+			log.Printf("[Sync] Found subtitle: %s", obj.Key)
 		} else {
 			log.Printf("[Sync] Skipped (not video/subtitle): %s (ext: %s)", obj.Key, ext)
 		}
@@ -585,6 +714,7 @@ func (h *MaterialHandler) Sync(c *gin.Context) {
 		material := &model.Material{
 			UserID:      userID,
 			Title:       title,
+			Folder:      extractFolder(videoKey),
 			VideoKey:    videoKey,
 			SubtitleKey: subtitleKey,
 		}
@@ -602,4 +732,235 @@ func (h *MaterialHandler) Sync(c *gin.Context) {
 		"imported": imported,
 		"skipped":  skipped,
 	})
+}
+
+// ScanSource 扫描视频源文件夹并导入
+func (h *MaterialHandler) ScanSource(c *gin.Context) {
+	userID := c.GetUint("userID")
+	sourcePath := c.Query("path")
+	
+	// 如果没有提供 path，返回当前配置的路径
+	if sourcePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "path query required"})
+		return
+	}
+
+	// 检查路径是否存在
+	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "source path not found"})
+		return
+	}
+
+	// 遍历文件夹查找视频文件
+	var videoFiles []string
+	err := filepath.Walk(sourcePath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if videoExts[ext] {
+			videoFiles = append(videoFiles, path)
+		}
+		return nil
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan: " + err.Error()})
+		return
+	}
+
+	log.Printf("[ScanSource] Found %d video files in %s", len(videoFiles), sourcePath)
+
+	// 获取已存在的记录
+	existingMaterials, _ := h.materialRepo.GetByUserID(userID)
+	existingKeys := make(map[string]bool)
+	for _, m := range existingMaterials {
+		existingKeys[m.VideoKey] = true
+	}
+
+	// 上传并创建记录
+	var imported []string
+	var skipped []string
+	ctx := c.Request.Context()
+
+	for _, videoPath := range videoFiles {
+		filename := filepath.Base(videoPath)
+		relPath, err := filepath.Rel(sourcePath, videoPath)
+		if err != nil {
+			continue
+		}
+		videoKey := fmt.Sprintf("sources/%d/%s", userID, relPath)
+		videoKey = strings.ReplaceAll(videoKey, "\\", "/")
+
+		// 检查是否已存在
+		if existingKeys[videoKey] {
+			skipped = append(skipped, filename)
+			continue
+		}
+
+		// 上传到存储
+		if err := h.storageSvc.UploadFile(ctx, videoKey, videoPath, "video/mp4"); err != nil {
+			skipped = append(skipped, filename+" (upload error)")
+			continue
+		}
+
+		// 查找同名的字幕文件
+		var subtitleKey string
+		baseName := filename[:len(filename)-len(filepath.Ext(filename))]
+		for _, ext := range []string{".srt", ".vtt"} {
+			subtitlePath := filepath.Join(filepath.Dir(videoPath), baseName+ext)
+			if _, err := os.Stat(subtitlePath); err == nil {
+				subtitleKey = strings.ReplaceAll(filepath.Join(filepath.Dir(videoKey), baseName+ext), "\\", "/")
+				h.storageSvc.UploadFile(ctx, subtitleKey, subtitlePath, "text/vtt")
+				break
+			}
+		}
+
+		// 提取标题
+		title := baseName
+		if relPath != filename {
+			// 保留相对路径作为标题
+			dir := filepath.Dir(relPath)
+			if dir != "." {
+				title = filepath.Join(dir, baseName)
+			}
+		}
+
+		// 创建记录
+		material := &model.Material{
+			UserID:      userID,
+			Title:       title,
+			Folder:      extractFolder(videoKey),
+			VideoKey:    videoKey,
+			SubtitleKey: subtitleKey,
+		}
+
+		if err := h.materialRepo.Create(material); err != nil {
+			skipped = append(skipped, filename+" (db error)")
+			continue
+		}
+
+		imported = append(imported, filename)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":  fmt.Sprintf("扫描完成，导入 %d 个，跳过 %d 个", len(imported), len(skipped)),
+		"imported": imported,
+		"skipped":  skipped,
+	})
+}
+
+// ScanSourceFolder 启动时自动扫描视频源文件夹
+func (h *MaterialHandler) ScanSourceFolder(userID uint) error {
+	if h.sourceCfg == nil || !h.sourceCfg.Enabled || h.sourceCfg.Path == "" {
+		log.Println("[ScanSourceFolder] Video source not enabled or path not set")
+		return nil
+	}
+
+	sourcePath := h.sourceCfg.Path
+
+	log.Printf("[ScanSourceFolder] Starting scan: path=%s", sourcePath)
+
+	// 检查路径是否存在
+	if _, err := os.Stat(sourcePath); os.IsNotExist(err) {
+		log.Printf("[ScanSourceFolder] Path not found: %s", sourcePath)
+		return fmt.Errorf("source path not found: %s", sourcePath)
+	}
+
+	// 遍历文件夹查找视频文件
+	var videoFiles []string
+	err := filepath.Walk(sourcePath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if videoExts[ext] {
+			videoFiles = append(videoFiles, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to scan: %v", err)
+	}
+
+	log.Printf("[ScanSourceFolder] Found %d video files in %s", len(videoFiles), sourcePath)
+
+	// 获取已存在的记录
+	existingMaterials, _ := h.materialRepo.GetByUserID(userID)
+	existingKeys := make(map[string]bool)
+	for _, m := range existingMaterials {
+		existingKeys[m.VideoKey] = true
+	}
+
+	// 上传并创建记录
+	var imported []string
+	var skipped []string
+	ctx := context.Background()
+
+	for _, videoPath := range videoFiles {
+		filename := filepath.Base(videoPath)
+		relPath, err := filepath.Rel(sourcePath, videoPath)
+		if err != nil {
+			continue
+		}
+		videoKey := fmt.Sprintf("sources/%d/%s", userID, relPath)
+		videoKey = strings.ReplaceAll(videoKey, "\\", "/")
+
+		// 检查是否已存在
+		if existingKeys[videoKey] {
+			skipped = append(skipped, filename)
+			continue
+		}
+
+		// 上传到存储
+		if err := h.storageSvc.UploadFile(ctx, videoKey, videoPath, "video/mp4"); err != nil {
+			skipped = append(skipped, filename+" (upload error)")
+			continue
+		}
+
+		// 查找同名的字幕文件
+		var subtitleKey string
+		baseName := filename[:len(filename)-len(filepath.Ext(filename))]
+		for _, ext := range []string{".srt", ".vtt"} {
+			subtitlePath := filepath.Join(filepath.Dir(videoPath), baseName+ext)
+			if _, err := os.Stat(subtitlePath); err == nil {
+				subtitleKey = strings.ReplaceAll(filepath.Join(filepath.Dir(videoKey), baseName+ext), "\\", "/")
+				h.storageSvc.UploadFile(ctx, subtitleKey, subtitlePath, "text/vtt")
+				break
+			}
+		}
+
+		// 提取标题
+		title := baseName
+		if relPath != filename {
+			dir := filepath.Dir(relPath)
+			if dir != "." {
+				title = filepath.Join(dir, baseName)
+			}
+		}
+
+		// 创建记录
+		material := &model.Material{
+			UserID:      userID,
+			Title:       title,
+			Folder:      extractFolder(videoKey),
+			VideoKey:    videoKey,
+			SubtitleKey: subtitleKey,
+		}
+
+		if err := h.materialRepo.Create(material); err != nil {
+			skipped = append(skipped, filename+" (db error)")
+			continue
+		}
+
+		imported = append(imported, filename)
+	}
+
+	log.Printf("[ScanSourceFolder] Scan completed: imported %d, skipped %d", len(imported), len(skipped))
+	return nil
 }

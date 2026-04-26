@@ -97,6 +97,10 @@ func (s *MinIOService) DeleteObject(ctx context.Context, objectKey string) error
 	return s.client.RemoveObject(ctx, s.bucket, objectKey, minio.RemoveObjectOptions{})
 }
 
+func (s *MinIOService) GetLocalPath(key string) string {
+	return ""
+}
+
 func (s *MinIOService) GetBucketName() string {
 	return s.bucket
 }

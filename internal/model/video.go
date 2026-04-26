@@ -12,6 +12,7 @@ type Material struct {
 	UserID      uint           `gorm:"not null;index" json:"user_id"`
 	Title       string         `gorm:"not null" json:"title"`
 	Description string         `json:"description"`
+	Folder      string         `gorm:"index" json:"folder"`
 	VideoKey    string         `gorm:"not null" json:"video_key"`       // MinIO 中的对象键
 	VideoURL    string         `gorm:"-" json:"video_url"`              // 临时预签名 URL
 	SubtitleKey string         `json:"subtitle_key"`                    // 字幕文件 Key

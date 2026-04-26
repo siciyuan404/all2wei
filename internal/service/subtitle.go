@@ -141,13 +141,264 @@ func ParseVTT(data []byte) ([]model.SubtitleEntry, error) {
 	return entries, scanner.Err()
 }
 
-// ParseSubtitle 自动检测并解析字幕
+// ParseSubtitle 自动检测并解析字幕，并对超长条目进行智能分段
 func ParseSubtitle(data []byte) ([]model.SubtitleEntry, error) {
 	content := string(data)
+	var entries []model.SubtitleEntry
+	var err error
+
 	if strings.HasPrefix(strings.TrimSpace(content), "WEBVTT") {
-		return ParseVTT(data)
+		entries, err = ParseVTT(data)
+	} else {
+		entries, err = ParseSRT(data)
 	}
-	return ParseSRT(data)
+	if err != nil {
+		return nil, err
+	}
+
+	entries = SegmentSubtitles(entries)
+	return entries, nil
+}
+
+// SegmentSubtitles 对超长字幕条目进行智能分段
+// ASR 生成的字幕通常只有 1-2 条，时间跨度覆盖整个视频
+// 此函数先尝试按标点符号切分，若无标点则按固定长度切分
+func SegmentSubtitles(entries []model.SubtitleEntry) []model.SubtitleEntry {
+	var result []model.SubtitleEntry
+	idx := 0
+
+	for _, entry := range entries {
+		duration := entry.EndTime - entry.StartTime
+		if duration <= 8 || len([]rune(entry.Text)) <= 30 {
+			idx++
+			entry.Index = idx
+			entry.Text = cleanASRText(entry.Text)
+			result = append(result, entry)
+			continue
+		}
+
+		segments := splitByPunctuation(entry.Text)
+		if len(segments) <= 1 {
+			segments = splitByLength(entry.Text, 25)
+		}
+		if len(segments) <= 1 {
+			idx++
+			entry.Index = idx
+			entry.Text = cleanASRText(entry.Text)
+			result = append(result, entry)
+			continue
+		}
+
+		totalRunes := 0
+		for _, seg := range segments {
+			totalRunes += len([]rune(seg))
+		}
+
+		currentTime := entry.StartTime
+		for _, seg := range segments {
+			segRunes := len([]rune(seg))
+			segDuration := duration * float64(segRunes) / float64(totalRunes)
+			endTime := currentTime + segDuration
+			if endTime > entry.EndTime {
+				endTime = entry.EndTime
+			}
+
+			idx++
+			result = append(result, model.SubtitleEntry{
+				Index:     idx,
+				StartTime: currentTime,
+				EndTime:   endTime,
+				Text:      cleanASRText(seg),
+			})
+			currentTime = endTime
+		}
+	}
+
+	return result
+}
+
+// splitByPunctuation 按标点符号将长文本切分为短句
+func splitByPunctuation(text string) []string {
+	sentenceEnders := []string{
+		"。",
+		"！",
+		"？",
+		"；",
+		".",
+		"!",
+		"?",
+		";",
+		"…",
+		"……",
+		"\n",
+	}
+
+	type splitPos struct {
+		start int
+		end   int
+	}
+
+	textRunes := []rune(text)
+	var positions []splitPos
+	lastEnd := 0
+
+	for i := 0; i < len(textRunes); i++ {
+		matched := false
+		for _, ender := range sentenceEnders {
+			enderRunes := []rune(ender)
+			if i+len(enderRunes) <= len(textRunes) {
+				match := true
+				for k := 0; k < len(enderRunes); k++ {
+					if textRunes[i+k] != enderRunes[k] {
+						match = false
+						break
+					}
+				}
+				if match {
+					cutEnd := i + len(enderRunes)
+					if cutEnd > lastEnd {
+						segment := strings.TrimSpace(string(textRunes[lastEnd:cutEnd]))
+						if segment != "" {
+							positions = append(positions, splitPos{lastEnd, cutEnd})
+						}
+						lastEnd = cutEnd
+					}
+					i += len(enderRunes) - 1
+					matched = true
+					break
+				}
+			}
+		}
+
+		if !matched && i == len(textRunes)-1 && lastEnd < len(textRunes) {
+			segment := strings.TrimSpace(string(textRunes[lastEnd:]))
+			if segment != "" {
+				positions = append(positions, splitPos{lastEnd, len(textRunes)})
+			}
+		}
+	}
+
+	if len(positions) == 0 {
+		return []string{text}
+	}
+
+	var segments []string
+	for _, pos := range positions {
+		seg := strings.TrimSpace(string(textRunes[pos.start:pos.end]))
+		if seg != "" {
+			segments = append(segments, seg)
+		}
+	}
+
+	var merged []string
+	for _, seg := range segments {
+		if len(merged) > 0 && len([]rune(merged[len(merged)-1]))+len([]rune(seg)) < 15 {
+			merged[len(merged)-1] = merged[len(merged)-1] + seg
+		} else {
+			merged = append(merged, seg)
+		}
+	}
+
+	return merged
+}
+
+// cleanASRText 清理 ASR 生成字幕中的多余空格
+// ASR 字幕特征：每个字之间有空格（如 "这 是 一 个 测 试"）
+// 检测到这种模式时去掉字间空格
+func cleanASRText(text string) string {
+	text = strings.TrimSpace(text)
+
+	chars := []rune(text)
+	spaceCount := 0
+	nonSpaceCount := 0
+	for _, c := range chars {
+		if c == ' ' {
+			spaceCount++
+		} else {
+			nonSpaceCount++
+		}
+	}
+
+	if nonSpaceCount > 0 && float64(spaceCount)/float64(nonSpaceCount) > 0.3 {
+		var buf []rune
+		for i, c := range chars {
+			if c == ' ' {
+				nextNonSpace := false
+				for j := i + 1; j < len(chars); j++ {
+					if chars[j] != ' ' {
+						if chars[j] >= 0x4E00 && chars[j] <= 0x9FFF {
+							nextNonSpace = true
+						}
+						break
+					}
+				}
+				prevNonSpace := false
+				if i > 0 {
+					for j := i - 1; j >= 0; j-- {
+						if chars[j] != ' ' {
+							if chars[j] >= 0x4E00 && chars[j] <= 0x9FFF {
+								prevNonSpace = true
+							}
+							break
+						}
+					}
+				}
+				if prevNonSpace && nextNonSpace {
+					continue
+				}
+			}
+			buf = append(buf, c)
+		}
+		text = string(buf)
+	}
+
+	text = strings.ReplaceAll(text, "  ", " ")
+	text = strings.TrimSpace(text)
+	return text
+}
+
+// splitByLength 按固定字符数切分无标点的长文本
+// 优先在空格处断句，避免切断词语
+func splitByLength(text string, maxRunes int) []string {
+	textRunes := []rune(text)
+	if len(textRunes) <= maxRunes {
+		return []string{text}
+	}
+
+	var segments []string
+	start := 0
+
+	for start < len(textRunes) {
+		end := start + maxRunes
+		if end >= len(textRunes) {
+			seg := strings.TrimSpace(string(textRunes[start:]))
+			if seg != "" {
+				segments = append(segments, seg)
+			}
+			break
+		}
+
+		bestBreak := end
+		spaceRange := 8
+		searchStart := end - spaceRange
+		if searchStart < start {
+			searchStart = start
+		}
+		for i := end; i >= searchStart; i-- {
+			if i < len(textRunes) && textRunes[i] == ' ' {
+				bestBreak = i + 1
+				break
+			}
+		}
+
+		seg := strings.TrimSpace(string(textRunes[start:bestBreak]))
+		if seg != "" {
+			segments = append(segments, seg)
+		}
+		start = bestBreak
+	}
+
+	return segments
 }
 
 func parseSRTTime(timeStr string) (float64, error) {

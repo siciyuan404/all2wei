@@ -1,12 +1,19 @@
 import api from './axios';
 
-export const uploadMaterial = (formData) =>
+export const uploadMaterial = (formData, config = {}) =>
   api.post('/materials', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    ...config,
   });
 
-export const getMaterials = () =>
-  api.get('/materials');
+export const getMaterials = (folder) => {
+  const params = {};
+  if (folder) params.folder = folder;
+  return api.get('/materials', { params });
+};
+
+export const getFolders = () =>
+  api.get('/materials/folders');
 
 export const getMaterial = (id) =>
   api.get(`/materials/${id}`);
@@ -20,7 +27,6 @@ export const getSubtitle = (id) =>
 export const syncMaterials = () =>
   api.post('/materials/sync');
 
-// 获取视频流 URL（使用代理解决跨域问题）
 export const getVideoStreamUrl = (id) => {
   const baseURL = api.defaults.baseURL.replace('/api', '');
   const token = localStorage.getItem('token');

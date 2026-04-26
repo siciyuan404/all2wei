@@ -2,6 +2,8 @@ package main
 
 import (
 	"log"
+	"mime"
+	"os/exec"
 
 	"github.com/gin-gonic/gin"
 	"all2wei/internal/config"
@@ -14,7 +16,28 @@ import (
 )
 
 func main() {
-	// 加载配置
+	mime.AddExtensionType(".m4v", "video/mp4")
+	mime.AddExtensionType(".mkv", "video/x-matroska")
+	mime.AddExtensionType(".avi", "video/x-msvideo")
+	mime.AddExtensionType(".rmvb", "application/vnd.rn-realmedia-vbr")
+	mime.AddExtensionType(".rm", "application/vnd.rn-realmedia")
+	mime.AddExtensionType(".ts", "video/mp2t")
+	mime.AddExtensionType(".m2ts", "video/mp2t")
+	mime.AddExtensionType(".3gp", "video/3gpp")
+	mime.AddExtensionType(".flv", "video/x-flv")
+	mime.AddExtensionType(".wmv", "video/x-ms-wmv")
+	mime.AddExtensionType(".mov", "video/quicktime")
+	mime.AddExtensionType(".mpg", "video/mpeg")
+	mime.AddExtensionType(".mpeg", "video/mpeg")
+	mime.AddExtensionType(".vob", "video/dvd")
+
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		log.Println("WARNING: FFmpeg not found in PATH. Non-MP4/WebM video transcoding will NOT work.")
+		log.Println("  Install FFmpeg: https://ffmpeg.org/download.html")
+	} else {
+		log.Println("FFmpeg found, video transcoding is available")
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
@@ -70,11 +93,23 @@ func main() {
 	materialHandler := handler.NewMaterialHandler(materialRepo, storageSvc, &cfg.JWT)
 	materialHandler.SetMinIOService(minioSvc) // 设置 MinIO 服务用于同步
 
+	// 自动扫描视频源文件夹
+	if cfg.VideoSource.Enabled && cfg.VideoSource.Path != "" {
+		materialHandler.SetVideoSource(&cfg.VideoSource)
+		userID := cfg.VideoSource.UserID
+		if userID == 0 {
+			userID = 1 // 默认用户
+		}
+		if err := materialHandler.ScanSourceFolder(userID); err != nil {
+			log.Printf("Warning: Failed to scan video source folder: %v", err)
+		}
+	}
+
 	// 设置路由
 	r := gin.Default()
 	r.Use(middleware.CORSMiddleware())
 
-	// 本地文件服务
+	// 本地文件服务（必须在路由设置前）
 	r.Static("/files", "./uploads")
 
 	// 公开路由
@@ -94,7 +129,9 @@ func main() {
 
 		// 学习资料相关
 		auth.POST("/materials", materialHandler.Upload)
-		auth.POST("/materials/sync", materialHandler.Sync) // 同步 MinIO
+		auth.POST("/materials/sync", materialHandler.Sync)
+		auth.POST("/materials/scan", materialHandler.ScanSource)
+		auth.GET("/materials/folders", materialHandler.Folders)
 		auth.GET("/materials", materialHandler.List)
 		auth.GET("/materials/:id", materialHandler.Get)
 		auth.DELETE("/materials/:id", materialHandler.Delete)
@@ -111,8 +148,13 @@ func main() {
 		c.File("./web/dist/index.html")
 	})
 	
-	// SPA 路由 - 所有非 API 路由返回 index.html
+	// SPA 路由 - 所有非 API 路由返回 index.html（但 /files 除外）
 	r.NoRoute(func(c *gin.Context) {
+		// 如果是 /files 请求但没找到路由，返回 404
+		if len(c.Request.URL.Path) >= 6 && c.Request.URL.Path[:6] == "/files" {
+			c.JSON(404, gin.H{"error": "file not found"})
+			return
+		}
 		// 如果是 API 请求但没找到路由，返回 404
 		if len(c.Request.URL.Path) >= 4 && c.Request.URL.Path[:4] == "/api" {
 			c.JSON(404, gin.H{"error": "not found"})

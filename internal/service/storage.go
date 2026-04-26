@@ -15,6 +15,7 @@ type StorageService interface {
 	UploadBytes(ctx context.Context, key string, data []byte, contentType string) error
 	GetPresignedURL(ctx context.Context, key string, expiry time.Duration) (string, error)
 	DeleteObject(ctx context.Context, key string) error
+	GetLocalPath(key string) string
 }
 
 // LocalStorage 本地文件存储
@@ -71,9 +72,20 @@ func (s *LocalStorage) GetPresignedURL(ctx context.Context, key string, expiry t
 		return "", nil
 	}
 	// 本地存储直接返回相对路径
-	return fmt.Sprintf("%s/files/%s", s.baseURL, key), nil
+	return fmt.Sprintf("%s/%s", s.baseURL, key), nil
 }
 
 func (s *LocalStorage) DeleteObject(ctx context.Context, key string) error {
 	return os.Remove(s.objectPath(key))
+}
+
+func (s *LocalStorage) GetLocalPath(key string) string {
+	if key == "" {
+		return ""
+	}
+	path := s.objectPath(key)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return ""
+	}
+	return path
 }

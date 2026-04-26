@@ -1,6 +1,10 @@
 import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
+import { useToast } from '../context/ToastContext';
 import { uploadMaterial } from '../api/material';
+import { Button, Input } from '../components/common';
+import { PageLayout } from '../components/layout';
+import './Upload.css';
 
 function Upload() {
   const [title, setTitle] = useState('');
@@ -8,8 +12,9 @@ function Upload() {
   const [videoFile, setVideoFile] = useState(null);
   const [subtitleFile, setSubtitleFile] = useState(null);
   const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState('');
+  const [uploadProgress, setUploadProgress] = useState(0);
   const navigate = useNavigate();
+  const toast = useToast();
 
   const handleVideoChange = (e) => {
     const file = e.target.files[0];
@@ -29,12 +34,12 @@ function Upload() {
     e.preventDefault();
 
     if (!videoFile) {
-      setError('请选择视频文件');
+      toast.error('请选择视频文件');
       return;
     }
 
     if (!title.trim()) {
-      setError('请输入标题');
+      toast.error('请输入标题');
       return;
     }
 
@@ -47,70 +52,75 @@ function Upload() {
     }
 
     setUploading(true);
-    setError('');
+    setUploadProgress(0);
 
     try {
-      await uploadMaterial(formData);
+      await uploadMaterial(formData, {
+        onUploadProgress: (progressEvent) => {
+          const percentCompleted = progressEvent.total > 0
+            ? Math.round((progressEvent.loaded * 100) / progressEvent.total)
+            : 0;
+          setUploadProgress(percentCompleted);
+        },
+      });
+      toast.success('上传成功');
       navigate('/');
     } catch (err) {
-      setError(err.response?.data?.error || '上传失败');
+      toast.error(err.response?.data?.error || '上传失败');
     } finally {
       setUploading(false);
+      setUploadProgress(0);
     }
   };
 
   return (
-    <div className="container">
-      <header className="header">
-        <h1>上传学习资料</h1>
-        <Link to="/" className="btn-secondary">
-          返回列表
-        </Link>
-      </header>
-
-      <div className="upload-form-container">
-        {error && <div className="error-message">{error}</div>}
-
+    <PageLayout title="上传学习资料" showBack backTo="/">
+      <div className="upload-page">
         <form onSubmit={handleSubmit} className="upload-form">
-          <div className="form-group">
-            <label>视频文件 *</label>
-            <input
-              type="file"
-              accept="video/*"
-              onChange={handleVideoChange}
-              required
-            />
-            {videoFile && (
-              <span className="file-info">已选择: {videoFile.name}</span>
-            )}
+          <div className="upload-field">
+            <label className="upload-label">
+              视频文件 <span className="upload-required">*</span>
+            </label>
+            <div className="upload-file-input">
+              <input
+                type="file"
+                accept="video/*"
+                onChange={handleVideoChange}
+                required
+              />
+              {videoFile && (
+                <span className="upload-file-name">{videoFile.name}</span>
+              )}
+            </div>
           </div>
 
-          <div className="form-group">
-            <label>字幕文件 (可选，支持 SRT/VTT)</label>
-            <input
-              type="file"
-              accept=".srt,.vtt,.txt"
-              onChange={handleSubtitleChange}
-            />
-            {subtitleFile && (
-              <span className="file-info">已选择: {subtitleFile.name}</span>
-            )}
+          <div className="upload-field">
+            <label className="upload-label">字幕文件 (可选)</label>
+            <div className="upload-file-input">
+              <input
+                type="file"
+                accept=".srt,.vtt,.txt"
+                onChange={handleSubtitleChange}
+              />
+              {subtitleFile && (
+                <span className="upload-file-name">{subtitleFile.name}</span>
+              )}
+            </div>
+            <p className="upload-hint">支持 SRT、VTT 格式</p>
           </div>
 
-          <div className="form-group">
-            <label>标题 *</label>
-            <input
-              type="text"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="输入资料标题"
-              required
-            />
-          </div>
+          <Input
+            label="标题"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="输入资料标题"
+            required
+          />
 
-          <div className="form-group">
-            <label>描述</label>
+          <div className="upload-field">
+            <label className="upload-label">描述</label>
             <textarea
+              className="upload-textarea"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="输入资料描述（可选）"
@@ -118,21 +128,38 @@ function Upload() {
             />
           </div>
 
-          <div className="form-actions">
-            <button
+          {uploading && uploadProgress > 0 && (
+            <div className="upload-progress">
+              <div 
+                className="upload-progress-bar" 
+                style={{ width: `${uploadProgress}%` }}
+              />
+              <span className="upload-progress-text">{uploadProgress}%</span>
+            </div>
+          )}
+
+          <div className="upload-actions">
+            <Button
               type="submit"
-              className="btn-primary"
+              variant="primary"
+              size="large"
+              loading={uploading}
+            >
+              上传资料
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              size="large"
+              onClick={() => navigate('/')}
               disabled={uploading}
             >
-              {uploading ? '上传中...' : '上传资料'}
-            </button>
-            <Link to="/" className="btn-secondary">
               取消
-            </Link>
+            </Button>
           </div>
         </form>
       </div>
-    </div>
+    </PageLayout>
   );
 }
 

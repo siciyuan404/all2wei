@@ -1,147 +1,222 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { getMaterials, deleteMaterial, syncMaterials } from '../api/material';
+import { useToast } from '../context/ToastContext';
+import { getMaterials, getFolders, deleteMaterial, syncMaterials } from '../api/material';
+import { Button } from '../components/common';
+import { PageLayout } from '../components/layout';
+import './MaterialList.css';
+
+const RECENT_FOLDERS_KEY = 'recent_folders';
+const MAX_RECENT = 10;
+
+function getRecentFolders() {
+  try {
+    return JSON.parse(localStorage.getItem(RECENT_FOLDERS_KEY) || '[]');
+  } catch {
+    return [];
+  }
+}
+
+function addRecentFolder(folder) {
+  const recent = getRecentFolders().filter(f => f !== folder);
+  recent.unshift(folder);
+  localStorage.setItem(RECENT_FOLDERS_KEY, JSON.stringify(recent.slice(0, MAX_RECENT)));
+}
+
+function formatFolderName(folder) {
+  const parts = folder.split('/');
+  return parts[parts.length - 1] || folder;
+}
 
 function MaterialList() {
   const [materials, setMaterials] = useState([]);
+  const [folders, setFolders] = useState([]);
+  const [recentFolders, setRecentFolders] = useState([]);
+  const [selectedFolder, setSelectedFolder] = useState(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [error, setError] = useState('');
+  const toast = useToast();
   const navigate = useNavigate();
-  const user = JSON.parse(localStorage.getItem('user') || '{}');
 
   useEffect(() => {
-    fetchMaterials();
+    fetchFolders();
+    setRecentFolders(getRecentFolders());
   }, []);
 
-  const fetchMaterials = async () => {
+  useEffect(() => {
+    if (selectedFolder) {
+      fetchMaterials(selectedFolder);
+    } else {
+      setMaterials([]);
+      setLoading(false);
+    }
+  }, [selectedFolder]);
+
+  const fetchFolders = async () => {
     try {
-      const response = await getMaterials();
+      const response = await getFolders();
+      setFolders(response.data || []);
+    } catch (err) {
+      toast.error('获取文件夹列表失败');
+    }
+  };
+
+  const fetchMaterials = async (folder) => {
+    setLoading(true);
+    try {
+      const response = await getMaterials(folder);
       setMaterials(response.data || []);
     } catch (err) {
-      setError('获取资料列表失败');
+      toast.error('获取资料列表失败');
     } finally {
       setLoading(false);
     }
   };
 
+  const handleFolderClick = (folderName) => {
+    setSelectedFolder(folderName);
+    addRecentFolder(folderName);
+    setRecentFolders(getRecentFolders());
+  };
+
+  const handleBackToFolders = () => {
+    setSelectedFolder(null);
+    setMaterials([]);
+  };
+
   const handleSync = async () => {
     setSyncing(true);
-    setError('');
     try {
       const response = await syncMaterials();
-      alert(response.data.message);
-      fetchMaterials(); // 刷新列表
+      toast.success(response.data.message);
+      fetchFolders();
+      if (selectedFolder) fetchMaterials(selectedFolder);
     } catch (err) {
-      setError(err.response?.data?.error || '同步失败');
+      toast.error(err.response?.data?.error || '同步失败');
     } finally {
       setSyncing(false);
     }
   };
 
   const handleDelete = async (id) => {
-    if (!confirm('确定要删除这个学习资料吗？')) return;
-
+    if (!window.confirm('确定要删除这个学习资料吗？')) return;
     try {
       await deleteMaterial(id);
       setMaterials(materials.filter((m) => m.id !== id));
+      toast.success('删除成功');
     } catch (err) {
-      alert('删除失败');
+      toast.error('删除失败');
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    navigate('/login');
+  const handleMaterialClick = (id) => {
+    navigate(`/watch/${id}`);
   };
 
-  if (loading) {
-    return <div className="loading">加载中...</div>;
+  const actions = (
+    <>
+      <Link to="/upload">
+        <Button variant="primary" size="small">+ 上传</Button>
+      </Link>
+      <Button
+        variant="secondary"
+        size="small"
+        onClick={handleSync}
+        loading={syncing}
+      >
+        同步 MinIO
+      </Button>
+    </>
+  );
+
+  if (selectedFolder) {
+    return (
+      <PageLayout title={formatFolderName(selectedFolder)} actions={actions}>
+        <div className="folder-breadcrumb">
+          <button className="breadcrumb-link" onClick={handleBackToFolders}>
+            ← 所有文件夹
+          </button>
+          <span className="breadcrumb-sep">/</span>
+          <span className="breadcrumb-current">{formatFolderName(selectedFolder)}</span>
+        </div>
+        {loading ? (
+          <div className="material-list-loading">加载中...</div>
+        ) : materials.length === 0 ? (
+          <div className="material-list-empty">该文件夹下暂无视频</div>
+        ) : (
+          <div className="material-video-list">
+            {materials.map((m) => (
+              <div
+                key={m.id}
+                className="material-video-item"
+                onClick={() => handleMaterialClick(m.id)}
+              >
+                <div className="video-item-icon">▶</div>
+                <div className="video-item-info">
+                  <div className="video-item-title">{m.title}</div>
+                  {m.has_subtitle && <div className="video-item-badge">字幕</div>}
+                </div>
+                <button
+                  className="video-item-delete"
+                  onClick={(e) => { e.stopPropagation(); handleDelete(m.id); }}
+                  title="删除"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </PageLayout>
+    );
   }
 
   return (
-    <div className="container">
-      <header className="header">
-        <h1>我的学习资料</h1>
-        <div className="header-actions">
-          <span className="username">{user.username}</span>
-          <button className="btn-logout" onClick={handleLogout}>
-            退出
-          </button>
-        </div>
-      </header>
-
-      <div className="toolbar">
-        <Link to="/upload" className="btn-primary">
-          + 上传新资料
-        </Link>
-        <button 
-          className="btn-secondary" 
-          onClick={handleSync}
-          disabled={syncing}
-        >
-          {syncing ? '同步中...' : '同步 MinIO'}
-        </button>
-      </div>
-
-      {error && <div className="error-message">{error}</div>}
-
-      {materials.length === 0 ? (
-        <div className="empty-state">
-          <p>还没有学习资料</p>
-          <Link to="/upload" className="btn-primary">
-            上传第一个资料
-          </Link>
-        </div>
-      ) : (
-        <div className="material-grid">
-          {materials.map((material) => (
-            <div key={material.id} className="material-card">
-              <div className="card-video">
-                {material.video_url ? (
-                  <video
-                    src={material.video_url}
-                    preload="metadata"
-                    muted
-                    onMouseEnter={(e) => {
-                      if (e.target.src) e.target.play().catch(() => {});
-                    }}
-                    onMouseLeave={(e) => {
-                      e.target.pause();
-                      e.target.currentTime = 0;
-                    }}
-                  />
-                ) : (
-                  <div className="video-placeholder">无视频</div>
-                )}
-                {material.has_subtitle && (
-                  <span className="subtitle-badge">字幕</span>
-                )}
+    <PageLayout title="我的学习资料" actions={actions}>
+      {recentFolders.length > 0 && (
+        <div className="folder-section">
+          <h3 className="folder-section-title">最近访问</h3>
+          <div className="folder-grid">
+            {recentFolders.map((f) => (
+              <div
+                key={f}
+                className="folder-card folder-card-recent"
+                onClick={() => handleFolderClick(f)}
+              >
+                <div className="folder-card-icon">📂</div>
+                <div className="folder-card-name">{formatFolderName(f)}</div>
               </div>
-              <div className="card-info">
-                <h3>{material.title}</h3>
-                <p className="description">{material.description || '无描述'}</p>
-                <div className="card-actions">
-                  <Link
-                    to={`/watch/${material.id}`}
-                    className="btn-watch"
-                  >
-                    开始学习
-                  </Link>
-                  <button
-                    className="btn-delete"
-                    onClick={() => handleDelete(material.id)}
-                  >
-                    删除
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
-    </div>
+
+      <div className="folder-section">
+        <h3 className="folder-section-title">
+          所有文件夹
+          <span className="folder-count">{folders.length}</span>
+        </h3>
+        {folders.length === 0 && !loading ? (
+          <div className="material-list-empty">
+            暂无文件夹，请上传视频或同步 MinIO
+          </div>
+        ) : (
+          <div className="folder-grid">
+            {folders.map((f) => (
+              <div
+                key={f.name}
+                className="folder-card"
+                onClick={() => handleFolderClick(f.name)}
+              >
+                <div className="folder-card-icon">📁</div>
+                <div className="folder-card-name">{formatFolderName(f.name)}</div>
+                <div className="folder-card-count">{f.count} 个视频</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </PageLayout>
   );
 }
 

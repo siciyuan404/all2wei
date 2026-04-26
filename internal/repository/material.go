@@ -35,6 +35,24 @@ func (r *MaterialRepository) GetByUserID(userID uint) ([]model.Material, error) 
 	return materials, err
 }
 
+func (r *MaterialRepository) GetByUserIDAndFolder(userID uint, folder string) ([]model.Material, error) {
+	var materials []model.Material
+	err := r.db.Where("user_id = ? AND folder = ? AND status = ?", userID, folder, "active").
+		Order("title ASC").
+		Find(&materials).Error
+	return materials, err
+}
+
+func (r *MaterialRepository) GetFolders(userID uint) ([]string, error) {
+	var folders []string
+	err := r.db.Model(&model.Material{}).
+		Where("user_id = ? AND status = ? AND folder != ''", userID, "active").
+		Distinct("folder").
+		Order("folder ASC").
+		Pluck("folder", &folders).Error
+	return folders, err
+}
+
 func (r *MaterialRepository) Update(material *model.Material) error {
 	return r.db.Save(material).Error
 }

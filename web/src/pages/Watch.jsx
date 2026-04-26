@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import videojs from 'video.js';
 import 'video.js/dist/video-js.css';
-import { getMaterial, getSubtitle, getVideoStreamUrl } from '../api/material';
+import { useToast } from '../context/ToastContext';
+import { getMaterial, getSubtitle, getVideoStreamUrl, getMaterials } from '../api/material';
+import { Button } from '../components/common';
+import './Watch.css';
 
-// 进度存储 key
 const getProgressKey = (id) => `video_progress_${id}`;
 const PLAYBACK_RATE_KEY = 'video_playback_rate';
+const AUTO_PLAY_KEY = 'auto_play_next';
 
 function Watch() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const videoRef = useRef(null);
   const playerRef = useRef(null);
   const subtitleListRef = useRef(null);
@@ -17,7 +21,7 @@ function Watch() {
   const progressSaveTimerRef = useRef(null);
   const searchInputRef = useRef(null);
   const progressRestoredRef = useRef(false);
-  
+
   const [material, setMaterial] = useState(null);
   const [subtitles, setSubtitles] = useState([]);
   const [filteredSubtitles, setFilteredSubtitles] = useState([]);
@@ -32,8 +36,14 @@ function Watch() {
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [showOverlaySubtitle, setShowOverlaySubtitle] = useState(true);
+  const [transcoding, setTranscoding] = useState(false);
+  const transcodedRef = useRef(false);
+  const toast = useToast();
 
-  // 加载资料和字幕
+  const [folderVideos, setFolderVideos] = useState([]);
+  const [showPlaylist, setShowPlaylist] = useState(false);
+  const [autoPlay, setAutoPlay] = useState(() => localStorage.getItem(AUTO_PLAY_KEY) !== 'false');
+
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -46,8 +56,20 @@ function Watch() {
         setSubtitles(subtitleRes.data);
         setFilteredSubtitles(subtitleRes.data);
         subtitlesRef.current = subtitleRes.data;
+
+        if (materialRes.data?.folder) {
+          try {
+            const folderRes = await getMaterials(materialRes.data.folder);
+            setFolderVideos(folderRes.data || []);
+          } catch {
+            setFolderVideos([]);
+          }
+        } else {
+          setFolderVideos([]);
+        }
       } catch (err) {
         setError('加载失败');
+        setShowRetry(true);
       } finally {
         setLoading(false);
       }
@@ -56,50 +78,60 @@ function Watch() {
     fetchData();
   }, [id]);
 
-  // 初始化 Video.js 播放器
+  const currentVideoIndex = folderVideos.findIndex(v => String(v.id) === String(id));
+  const nextVideo = currentVideoIndex >= 0 && currentVideoIndex < folderVideos.length - 1
+    ? folderVideos[currentVideoIndex + 1]
+    : null;
+  const prevVideo = currentVideoIndex > 0
+    ? folderVideos[currentVideoIndex - 1]
+    : null;
+
+  const handlePlayNext = useCallback(() => {
+    if (nextVideo) {
+      navigate(`/watch/${nextVideo.id}`);
+    }
+  }, [nextVideo, navigate]);
+
+  const handlePlayPrev = useCallback(() => {
+    if (prevVideo) {
+      navigate(`/watch/${prevVideo.id}`);
+    }
+  }, [prevVideo, navigate]);
+
+  const handleVideoSwitch = useCallback((videoId) => {
+    navigate(`/watch/${videoId}`);
+  }, [navigate]);
+
+  const toggleAutoPlay = () => {
+    const newVal = !autoPlay;
+    setAutoPlay(newVal);
+    localStorage.setItem(AUTO_PLAY_KEY, String(newVal));
+  };
+
   useEffect(() => {
     if (!material?.video_url || !videoRef.current) return;
 
     const getVideoType = (url) => {
       const ext = url.split('.').pop()?.toLowerCase();
       const types = {
-        'mp4': 'video/mp4',
-        'webm': 'video/webm',
-        'ogg': 'video/ogg',
-        'ogv': 'video/ogg',
-        'mov': 'video/quicktime',
-        'mkv': 'video/x-matroska',
-        'avi': 'video/x-msvideo',
+        mp4: 'video/mp4',
+        webm: 'video/webm',
+        ogg: 'video/ogg',
+        ogv: 'video/ogg',
       };
       return types[ext] || 'video/mp4';
     };
 
     const videoType = getVideoType(material.video_url);
-    const isSupported = ['video/mp4', 'video/webm', 'video/ogg'].includes(videoType);
-
-    if (!isSupported) {
-      setError(`视频格式 .${videoType.split('/').pop()} 不被浏览器支持，请转换为 MP4 格式`);
-      return;
-    }
-
     const streamUrl = getVideoStreamUrl(id);
 
-    // 如果播放器已存在，只更新视频源
     if (playerRef.current && !playerRef.current.isDisposed()) {
       const player = playerRef.current;
       const currentSrc = player.currentSrc();
-      
-      // 只有当视频源真正改变时才更新
+
       if (currentSrc !== streamUrl) {
-        // 记录当前播放进度
         const currentTime = player.currentTime();
-        
-        player.src({
-          src: streamUrl,
-          type: videoType,
-        });
-        
-        // 恢复播放进度（如果之前有进度）
+        player.src({ src: streamUrl, type: videoType });
         if (currentTime > 0) {
           player.one('loadedmetadata', () => {
             player.currentTime(currentTime);
@@ -109,7 +141,6 @@ function Watch() {
       return;
     }
 
-    // 获取保存的播放速度
     const savedRate = parseFloat(localStorage.getItem(PLAYBACK_RATE_KEY)) || 1;
 
     const player = videojs(videoRef.current, {
@@ -120,45 +151,28 @@ function Watch() {
       playbackRates: [0.5, 0.75, 1, 1.25, 1.5, 2],
     });
 
-    // 恢复播放速度
     player.playbackRate(savedRate);
+    player.src({ type: videoType, src: streamUrl });
 
-    // 设置视频源
-    console.log('Setting video source:', streamUrl, 'type:', videoType);
-    player.src({
-      type: videoType,
-      src: streamUrl,
-    });
-
-    // 监听播放错误
     player.on('error', () => {
       const err = player.error();
-      console.error('Video error:', err);
       if (err) {
-        const errorMessages = {
-          1: '视频加载被中断',
-          2: '网络错误，无法加载视频',
-          3: '视频解码错误',
-          4: '视频格式不支持或文件不存在',
-          5: '视频加密或受保护',
-        };
-        setError(errorMessages[err.code] || `视频加载失败: ${err.message || '未知错误'}`);
+        if (err.code === 4 && !transcodedRef.current) {
+          transcodedRef.current = true;
+          setTranscoding(true);
+          const transcodedUrl = streamUrl + (streamUrl.includes('?') ? '&' : '?') + 'transcode=1';
+          player.src({ type: 'video/mp4', src: transcodedUrl });
+          return;
+        }
+        setError(`视频加载失败: ${err.message || '未知错误'}`);
         setShowRetry(true);
       }
     });
 
-    // 监听加载事件
-    player.on('loadstart', () => console.log('Video: loadstart'));
-    player.on('loadeddata', () => console.log('Video: loadeddata'));
-    player.on('canplay', () => console.log('Video: canplay'));
-    player.on('waiting', () => console.log('Video: waiting/buffering'));
-    player.on('playing', () => console.log('Video: playing'));
-
-    // 播放器加载元数据后标记为就绪
     player.one('loadedmetadata', () => {
       setPlayerReady(true);
-      
-      // 恢复播放进度（只恢复一次，避免覆盖用户手动设置的进度）
+      setTranscoding(false);
+
       if (!progressRestoredRef.current) {
         progressRestoredRef.current = true;
         const savedProgress = localStorage.getItem(getProgressKey(id));
@@ -172,36 +186,33 @@ function Watch() {
       }
     });
 
-    // 监听播放速度变化并保存
     player.on('ratechange', () => {
-      const rate = player.playbackRate();
-      localStorage.setItem(PLAYBACK_RATE_KEY, rate.toString());
+      localStorage.setItem(PLAYBACK_RATE_KEY, player.playbackRate().toString());
     });
 
-    // 监听播放结束
     player.on('ended', () => {
       setIsEnded(true);
       localStorage.removeItem(getProgressKey(id));
+      if (autoPlay && nextVideo) {
+        setTimeout(() => handlePlayNext(), 1500);
+      }
     });
 
-    // 监听播放开始（隐藏结束提示）
     player.on('play', () => {
       setIsEnded(false);
     });
 
     playerRef.current = player;
 
-    // 监听时间更新
     player.on('timeupdate', () => {
       const currentTime = player.currentTime();
       const currentSubs = subtitlesRef.current;
-      
-      // 同步字幕高亮
+
       const index = currentSubs.findIndex(
         (sub) => currentTime >= sub.start_time && currentTime <= sub.end_time
       );
 
-      setCurrentSubtitleIndex(prevIndex => {
+      setCurrentSubtitleIndex((prevIndex) => {
         if (index !== prevIndex) {
           if (index >= 0) {
             setCurrentSubtitleText(currentSubs[index]?.text || '');
@@ -213,7 +224,6 @@ function Watch() {
         return prevIndex;
       });
 
-      // 定期保存进度（每5秒）
       if (!progressSaveTimerRef.current) {
         progressSaveTimerRef.current = setTimeout(() => {
           if (player && !player.isDisposed() && !player.paused()) {
@@ -229,7 +239,6 @@ function Watch() {
         clearTimeout(progressSaveTimerRef.current);
       }
       if (playerRef.current && !playerRef.current.isDisposed()) {
-        // 保存最终进度
         const currentTime = playerRef.current.currentTime();
         if (currentTime > 0) {
           localStorage.setItem(getProgressKey(id), currentTime.toString());
@@ -238,19 +247,13 @@ function Watch() {
         playerRef.current = null;
         setPlayerReady(false);
       }
-      // 重置进度恢复标记，以便下次可以恢复新视频的进度
       progressRestoredRef.current = false;
+      transcodedRef.current = false;
     };
-  }, [material, id]);
+  }, [material, id, autoPlay, nextVideo, handlePlayNext]);
 
-  // 字幕滚动到当前位置
   useEffect(() => {
-    if (
-      currentSubtitleIndex >= 0 &&
-      subtitleListRef.current &&
-      subtitleExpanded &&
-      !searchQuery
-    ) {
+    if (currentSubtitleIndex >= 0 && subtitleListRef.current && subtitleExpanded && !searchQuery) {
       const activeElement = subtitleListRef.current.children[currentSubtitleIndex];
       if (activeElement) {
         const container = subtitleListRef.current;
@@ -263,9 +266,8 @@ function Watch() {
         const elementVisibleBottom = elementVisibleTop + elementHeight;
 
         if (elementVisibleTop < 50 || elementVisibleBottom > containerHeight - 50) {
-          const targetScrollTop = elementTop - containerHeight / 2 + elementHeight / 2;
           container.scrollTo({
-            top: targetScrollTop,
+            top: elementTop - containerHeight / 2 + elementHeight / 2,
             behavior: 'smooth',
           });
         }
@@ -273,73 +275,73 @@ function Watch() {
     }
   }, [currentSubtitleIndex, subtitleExpanded, searchQuery]);
 
-  // 键盘快捷键
   useEffect(() => {
     const handleKeyDown = (e) => {
       const player = playerRef.current;
       if (!player || !playerReady || player.isDisposed()) return;
 
-      // 如果正在输入框中输入，不处理快捷键
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
         if (e.key !== 'Escape') return;
       }
 
       switch (e.key) {
-        case ' ': // 空格：暂停/播放
+        case ' ':
           e.preventDefault();
-          if (player.paused()) {
-            player.play();
-          } else {
-            player.pause();
-          }
+          player.paused() ? player.play() : player.pause();
           break;
-        case 'ArrowLeft': // 左箭头：后退10秒
+        case 'ArrowLeft':
           e.preventDefault();
           player.currentTime(Math.max(0, player.currentTime() - 10));
           break;
-        case 'ArrowRight': // 右箭头：前进10秒
+        case 'ArrowRight':
           e.preventDefault();
           player.currentTime(player.currentTime() + 10);
           break;
-        case 'ArrowUp': // 上箭头：增加音量
+        case 'ArrowUp':
           e.preventDefault();
           player.volume(Math.min(1, player.volume() + 0.1));
           break;
-        case 'ArrowDown': // 下箭头：减小音量
+        case 'ArrowDown':
           e.preventDefault();
           player.volume(Math.max(0, player.volume() - 0.1));
           break;
-        case 'f': // F：全屏切换
+        case 'f':
         case 'F':
           e.preventDefault();
-          if (player.isFullscreen()) {
-            player.exitFullscreen();
-          } else {
-            player.requestFullscreen();
-          }
+          player.isFullscreen() ? player.exitFullscreen() : player.requestFullscreen();
           break;
-        case 'm': // M：静音切换
+        case 'm':
         case 'M':
           e.preventDefault();
           player.muted(!player.muted());
           break;
-        case '/': // /：搜索字幕
+        case '/':
         case '?':
           e.preventDefault();
           setShowSearch(true);
           setTimeout(() => searchInputRef.current?.focus(), 100);
           break;
-        case 's': // S：切换字幕面板
+        case 's':
         case 'S':
           e.preventDefault();
           setSubtitleExpanded(!subtitleExpanded);
           break;
-        case 'c': // C：切换画面字幕
+        case 'c':
         case 'C':
           e.preventDefault();
           setShowOverlaySubtitle(!showOverlaySubtitle);
           break;
-        case 'Escape': // ESC：关闭搜索
+        case 'p':
+        case 'P':
+          e.preventDefault();
+          setShowPlaylist(!showPlaylist);
+          break;
+        case 'n':
+        case 'N':
+          e.preventDefault();
+          if (nextVideo) handlePlayNext();
+          break;
+        case 'Escape':
           if (showSearch) {
             setShowSearch(false);
             setSearchQuery('');
@@ -353,32 +355,16 @@ function Watch() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [playerReady, subtitleExpanded, showSearch, showOverlaySubtitle, subtitles]);
+  }, [playerReady, subtitleExpanded, showSearch, showOverlaySubtitle, subtitles, showPlaylist, nextVideo, handlePlayNext]);
 
-  // 点击字幕跳转到对应时间
   const handleSubtitleClick = useCallback((startTime) => {
     const player = playerRef.current;
-    if (!player) {
-      console.warn('Player not initialized');
-      return;
-    }
-    if (player.isDisposed()) {
-      console.warn('Player is disposed');
-      return;
-    }
-    if (!playerReady) {
-      console.warn('Player not ready yet');
-      return;
-    }
-    
+    if (!player || player.isDisposed() || !playerReady) return;
+
     try {
       const duration = player.duration();
-      if (duration > 0 && startTime > duration) {
-        console.warn('Seek time exceeds video duration');
-        return;
-      }
-      
-      // 先暂停再跳转再播放，确保跳转成功
+      if (duration > 0 && startTime > duration) return;
+
       player.pause();
       player.currentTime(startTime);
       player.play();
@@ -388,20 +374,17 @@ function Watch() {
     }
   }, [playerReady]);
 
-  // 搜索字幕
   const handleSearch = (query) => {
     setSearchQuery(query);
     if (!query.trim()) {
       setFilteredSubtitles(subtitles);
     } else {
-      const filtered = subtitles.filter(sub => 
-        sub.text.toLowerCase().includes(query.toLowerCase())
+      setFilteredSubtitles(
+        subtitles.filter((sub) => sub.text.toLowerCase().includes(query.toLowerCase()))
       );
-      setFilteredSubtitles(filtered);
     }
   };
 
-  // 重试加载
   const handleRetry = () => {
     setError('');
     setShowRetry(false);
@@ -409,7 +392,6 @@ function Watch() {
     window.location.reload();
   };
 
-  // 重播
   const handleReplay = () => {
     const player = playerRef.current;
     if (player && !player.isDisposed()) {
@@ -420,31 +402,36 @@ function Watch() {
   };
 
   if (loading) {
-    return <div className="loading">加载中...</div>;
+    return (
+      <div className="watch-loading">
+        <div className="watch-spinner" />
+        <p>加载中...</p>
+      </div>
+    );
   }
 
   if (error || !material) {
     return (
-      <div className="error-container">
+      <div className="watch-error">
         <p>{error || '资料不存在'}</p>
-        {showRetry && (
-          <button onClick={handleRetry} className="btn-primary" style={{ marginTop: '16px' }}>
-            重试
-          </button>
-        )}
-        <Link to="/" className="btn-primary" style={{ marginTop: showRetry ? '12px' : '16px' }}>
-          返回列表
-        </Link>
+        <div className="watch-error-actions">
+          {showRetry && (
+            <Button variant="primary" onClick={handleRetry}>重试</Button>
+          )}
+          <Link to="/">
+            <Button variant="secondary">返回列表</Button>
+          </Link>
+        </div>
       </div>
     );
   }
 
   if (!material.video_url) {
     return (
-      <div className="error-container">
+      <div className="watch-error">
         <p>视频资源不可用</p>
-        <Link to="/" className="btn-primary">
-          返回列表
+        <Link to="/">
+          <Button variant="primary">返回列表</Button>
         </Link>
       </div>
     );
@@ -455,27 +442,34 @@ function Watch() {
   return (
     <div className="watch-page">
       <header className="watch-header">
-        <Link to="/" className="btn-back">
-          ← 返回
-        </Link>
-        <h1>{material.title}</h1>
-        <div className="header-actions">
-          <button 
-            className="btn-icon" 
+        <Link to="/" className="watch-back">← 返回</Link>
+        <h1 className="watch-title">{material.title}</h1>
+        <div className="watch-actions">
+          {folderVideos.length > 0 && (
+            <button
+              className={`watch-action-btn ${showPlaylist ? 'active' : ''}`}
+              onClick={() => setShowPlaylist(!showPlaylist)}
+              title="播放列表 (P)"
+            >
+              📋
+            </button>
+          )}
+          <button
+            className="watch-action-btn"
             onClick={() => setShowOverlaySubtitle(!showOverlaySubtitle)}
             title={`${showOverlaySubtitle ? '隐藏' : '显示'}画面字幕 (C)`}
           >
             {showOverlaySubtitle ? '💬' : '🚫'}
           </button>
-          <button 
-            className="btn-icon" 
+          <button
+            className="watch-action-btn"
             onClick={() => setShowSearch(!showSearch)}
             title="搜索字幕 (/)"
           >
             🔍
           </button>
-          <button 
-            className="btn-icon" 
+          <button
+            className="watch-action-btn"
             onClick={() => setSubtitleExpanded(!subtitleExpanded)}
             title={`${subtitleExpanded ? '收起' : '展开'}字幕面板 (S)`}
           >
@@ -485,35 +479,39 @@ function Watch() {
       </header>
 
       <div className="watch-container">
-        {/* 视频区域 */}
-        <div className="video-section">
-          <div className="video-wrapper">
-            <video
-              ref={videoRef}
-              className="video-js vjs-big-play-centered"
-            />
-            
-            {/* 画面上字幕叠加 */}
+        <div className="watch-video-section">
+          <div className="watch-video-wrapper">
+            <video ref={videoRef} className="video-js vjs-big-play-centered" />
+
+            {transcoding && (
+              <div className="watch-transcoding-overlay">
+                <div className="watch-spinner" />
+                <p>正在转码，请稍候...</p>
+              </div>
+            )}
+
             {showOverlaySubtitle && currentSubtitleText && (
-              <div className="overlay-subtitle">
+              <div className="watch-overlay-subtitle">
                 {currentSubtitleText.split('\n').map((line, i) => (
                   <p key={i}>{line}</p>
                 ))}
               </div>
             )}
 
-            {/* 播放结束提示 */}
             {isEnded && (
-              <div className="video-ended-overlay">
-                <div className="ended-content">
-                  <div className="ended-icon">▶</div>
+              <div className="watch-ended-overlay">
+                <div className="watch-ended-content">
+                  <div className="watch-ended-icon">▶</div>
                   <p>视频播放完毕</p>
-                  <div className="ended-actions">
-                    <button onClick={handleReplay} className="btn-primary">
-                      ↺ 重播
-                    </button>
-                    <Link to="/" className="btn-secondary">
-                      返回列表
+                  <div className="watch-ended-actions">
+                    <Button variant="primary" onClick={handleReplay}>↺ 重播</Button>
+                    {nextVideo && (
+                      <Button variant="primary" onClick={handlePlayNext}>
+                        下一集 ▶
+                      </Button>
+                    )}
+                    <Link to="/">
+                      <Button variant="secondary">返回列表</Button>
                     </Link>
                   </div>
                 </div>
@@ -521,98 +519,152 @@ function Watch() {
             )}
           </div>
 
+          <div className="watch-nav-bar">
+            <button
+              className="watch-nav-btn"
+              onClick={handlePlayPrev}
+              disabled={!prevVideo}
+              title="上一集"
+            >
+              ◀ 上一集
+            </button>
+            <label className="watch-autoplay-toggle" title="自动连播">
+              <input
+                type="checkbox"
+                checked={autoPlay}
+                onChange={toggleAutoPlay}
+              />
+              <span>自动连播</span>
+            </label>
+            <button
+              className="watch-nav-btn"
+              onClick={handlePlayNext}
+              disabled={!nextVideo}
+              title="下一集 (N)"
+            >
+              下一集 ▶
+            </button>
+          </div>
+
           {material.description && (
-            <div className="video-description">
+            <div className="watch-description">
               <p>{material.description}</p>
             </div>
           )}
 
-          {/* 快捷键提示 */}
-          <div className="shortcuts-hint">
-            <span>空格 暂停 | ← → 快进/后退 | ↑ ↓ 音量 | F 全屏 | / 搜索</span>
+          <div className="watch-shortcuts">
+            <span>空格 暂停</span>
+            <span>← → 快进/退</span>
+            <span>F 全屏</span>
+            <span>P 播放列表</span>
+            <span>N 下一集</span>
           </div>
         </div>
 
-        {/* 字幕侧边栏 */}
-        {subtitles.length > 0 && (
-          <div className={`subtitle-panel ${subtitleExpanded ? 'expanded' : 'collapsed'}`}>
-            <div className="subtitle-header" onClick={() => setSubtitleExpanded(!subtitleExpanded)}>
-              <h3>字幕</h3>
-              <button className="subtitle-toggle">
-                {subtitleExpanded ? '−' : '+'}
-              </button>
+        <div className="watch-sidebar">
+          {showPlaylist && folderVideos.length > 0 && (
+            <div className="watch-playlist-panel">
+              <div className="playlist-header">
+                <h3>播放列表</h3>
+                <span className="playlist-count">{currentVideoIndex + 1} / {folderVideos.length}</span>
+              </div>
+              <div className="playlist-list">
+                {folderVideos.map((v, idx) => (
+                  <div
+                    key={v.id}
+                    className={`playlist-item ${String(v.id) === String(id) ? 'active' : ''}`}
+                    onClick={() => handleVideoSwitch(v.id)}
+                  >
+                    <span className="playlist-item-index">{idx + 1}</span>
+                    <span className="playlist-item-title">{v.title}</span>
+                    {v.has_subtitle && <span className="playlist-item-badge">字幕</span>}
+                  </div>
+                ))}
+              </div>
             </div>
-            
-            {subtitleExpanded && (
-              <>
-                {/* 搜索框 */}
-                {showSearch && (
-                  <div className="subtitle-search">
-                    <input
-                      ref={searchInputRef}
-                      type="text"
-                      placeholder="搜索字幕..."
-                      value={searchQuery}
-                      onChange={(e) => handleSearch(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Escape' && (setShowSearch(false), setSearchQuery(''), setFilteredSubtitles(subtitles))}
-                    />
-                    {searchQuery && (
-                      <button
-                        className="search-clear"
-                        onClick={() => { setSearchQuery(''); setFilteredSubtitles(subtitles); }}
-                        title="清空搜索"
-                      >
-                        ✕
-                      </button>
-                    )}
-                    {!searchQuery && (
-                      <span className="search-count">
-                        {filteredSubtitles.length} 条
-                      </span>
+          )}
+
+          {subtitles.length > 0 && (
+            <div className={`watch-subtitle-panel ${subtitleExpanded ? 'expanded' : 'collapsed'}`}>
+              <div
+                className="watch-subtitle-header"
+                onClick={() => setSubtitleExpanded(!subtitleExpanded)}
+              >
+                <h3>字幕</h3>
+                <button className="watch-subtitle-toggle">
+                  {subtitleExpanded ? '−' : '+'}
+                </button>
+              </div>
+
+              {subtitleExpanded && (
+                <>
+                  {showSearch && (
+                    <div className="watch-subtitle-search">
+                      <input
+                        ref={searchInputRef}
+                        type="text"
+                        placeholder="搜索字幕..."
+                        value={searchQuery}
+                        onChange={(e) => handleSearch(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') {
+                            setShowSearch(false);
+                            setSearchQuery('');
+                            setFilteredSubtitles(subtitles);
+                          }
+                        }}
+                      />
+                      {searchQuery && (
+                        <button
+                          className="watch-search-clear"
+                          onClick={() => {
+                            setSearchQuery('');
+                            setFilteredSubtitles(subtitles);
+                          }}
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="watch-subtitle-list" ref={subtitleListRef}>
+                    {displaySubtitles.length === 0 ? (
+                      <div className="watch-no-results">无匹配字幕</div>
+                    ) : (
+                      displaySubtitles.map((subtitle, index) => {
+                        const originalIndex = subtitles.findIndex((s) => s.index === subtitle.index);
+                        return (
+                          <div
+                            key={subtitle.index || index}
+                            className={`watch-subtitle-item ${
+                              originalIndex === currentSubtitleIndex ? 'active' : ''
+                            }`}
+                            onClick={() => handleSubtitleClick(subtitle.start_time)}
+                          >
+                            <span className="watch-subtitle-time">
+                              {formatTime(subtitle.start_time)}
+                            </span>
+                            <p className="watch-subtitle-text">{subtitle.text}</p>
+                          </div>
+                        );
+                      })
                     )}
                   </div>
-                )}
-                
-                <div className="subtitle-list" ref={subtitleListRef}>
-                  {displaySubtitles.length === 0 ? (
-                    <div className="no-results">无匹配字幕</div>
-                  ) : (
-                    displaySubtitles.map((subtitle, index) => {
-                      // 找到原数组中的索引用于高亮
-                      const originalIndex = subtitles.findIndex(s => s.index === subtitle.index);
-                      return (
-                        <div
-                          key={subtitle.index || index}
-                          className={`subtitle-item ${
-                            originalIndex === currentSubtitleIndex ? 'active' : ''
-                          }`}
-                          onClick={() => handleSubtitleClick(subtitle.start_time)}
-                        >
-                          <span className="subtitle-time">
-                            {formatTime(subtitle.start_time)}
-                          </span>
-                          <p className="subtitle-text">{subtitle.text}</p>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-// 格式化时间为 MM:SS
 function formatTime(seconds) {
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
-  return `${mins.toString().padStart(2, '0')}:${secs
-    .toString()
-    .padStart(2, '0')}`;
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
 export default Watch;

@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { login } from '../api/auth';
+import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
+import { login as loginApi } from '../api/auth';
+import { Button, Input } from '../components/common';
+import './Login.css';
 
 function Login() {
   const [username, setUsername] = useState('');
@@ -8,6 +12,8 @@ function Login() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const { login } = useAuth();
+  const toast = useToast();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -15,57 +21,61 @@ function Login() {
     setLoading(true);
 
     try {
-      const response = await login(username, password);
+      const response = await loginApi(username, password);
       const { token, user } = response.data;
-      localStorage.setItem('token', token);
-      localStorage.setItem('user', JSON.stringify(user));
+      login(token, user);
+      toast.success('登录成功');
       navigate('/');
     } catch (err) {
-      setError(err.response?.data?.error || '登录失败');
+      const errorMsg = err.response?.data?.error || '登录失败，请检查用户名和密码';
+      setError(errorMsg);
+      toast.error(errorMsg);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="login-container">
+    <div className="login-page">
       <div className="login-box">
-        <h1>All2Wei</h1>
-        <h2>欢迎回来</h2>
+        <div className="login-header">
+          <h1 className="login-title">All2Wei</h1>
+          <p className="login-subtitle">视频学习资料管理系统</p>
+        </div>
 
-        {error && <div className="error-message">{error}</div>}
+        {error && <div className="login-error">{error}</div>}
 
-        <form onSubmit={handleSubmit}>
-          <div className="form-group">
-            <label>用户名</label>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="请输入用户名"
-              required
-              minLength={3}
-            />
-          </div>
+        <form onSubmit={handleSubmit} className="login-form">
+          <Input
+            label="用户名"
+            type="text"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            placeholder="请输入用户名"
+            required
+          />
 
-          <div className="form-group">
-            <label>密码</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="请输入密码"
-              required
-              minLength={6}
-            />
-          </div>
+          <Input
+            label="密码"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="请输入密码"
+            required
+          />
 
-          <button type="submit" className="btn-primary" disabled={loading}>
-            {loading ? '登录中...' : '登录'}
-          </button>
+          <Button
+            type="submit"
+            variant="primary"
+            size="large"
+            fullWidth
+            loading={loading}
+          >
+            登录
+          </Button>
         </form>
 
-        <p className="toggle-text">
+        <p className="login-hint">
           默认账号：all2wei / all2wei
         </p>
       </div>

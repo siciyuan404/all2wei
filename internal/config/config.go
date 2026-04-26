@@ -5,11 +5,18 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig   `mapstructure:"server"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Storage  StorageConfig  `mapstructure:"storage"`
-	MinIO    MinIOConfig    `mapstructure:"minio"`
-	JWT      JWTConfig      `mapstructure:"jwt"`
+	Server     ServerConfig     `mapstructure:"server"`
+	Database   DatabaseConfig   `mapstructure:"database"`
+	Storage    StorageConfig    `mapstructure:"storage"`
+	VideoSource VideoSourceConfig `mapstructure:"video_source"`
+	MinIO      MinIOConfig      `mapstructure:"minio"`
+	JWT        JWTConfig        `mapstructure:"jwt"`
+}
+
+type VideoSourceConfig struct {
+	Path    string `mapstructure:"path"`    // 视频源文件夹路径
+	Enabled bool   `mapstructure:"enabled"` // 是否启用
+	UserID  uint   `mapstructure:"user_id"` // 导入到哪个用户
 }
 
 type StorageConfig struct {
@@ -48,6 +55,7 @@ func Load() (*Config, error) {
 	viper.SetDefault("server.port", ":8080")
 	viper.SetDefault("database.path", "all2wei.db")
 	viper.SetDefault("storage.type", "local")
+	viper.SetDefault("video_source.enabled", false)
 	viper.SetDefault("minio.use_ssl", false)
 	viper.SetDefault("minio.bucket_name", "all2wei")
 	viper.SetDefault("minio.region", "us-east-1")

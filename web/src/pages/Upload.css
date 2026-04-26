@@ -1,0 +1,136 @@
+.upload-page {
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.upload-form {
+  background: var(--card-bg);
+  padding: 32px;
+  border-radius: var(--radius-lg);
+}
+
+.upload-field {
+  margin-bottom: 20px;
+}
+
+.upload-label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.upload-required {
+  color: var(--danger-color);
+  margin-left: 4px;
+}
+
+.upload-file-input {
+  position: relative;
+}
+
+.upload-file-input input[type="file"] {
+  width: 100%;
+  padding: 12px 16px;
+  background: var(--bg-color);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+.upload-file-input input[type="file"]:hover {
+  border-color: var(--primary-color);
+}
+
+.upload-file-input input[type="file"]::file-selector-button {
+  padding: 8px 16px;
+  margin-right: 16px;
+  background: var(--primary-color);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.upload-file-name {
+  display: block;
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.upload-hint {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.upload-textarea {
+  width: 100%;
+  padding: 12px 16px;
+  background: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 15px;
+  resize: vertical;
+  min-height: 100px;
+  transition: border-color 0.2s;
+}
+
+.upload-textarea:focus {
+  outline: none;
+  border-color: var(--primary-color);
+}
+
+.upload-textarea::placeholder {
+  color: var(--text-muted);
+}
+
+.upload-progress {
+  margin-bottom: 20px;
+  background: var(--bg-color);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  position: relative;
+  height: 32px;
+}
+
+.upload-progress-bar {
+  height: 100%;
+  background: var(--primary-color);
+  transition: width 0.3s ease;
+}
+
+.upload-progress-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.upload-actions {
+  display: flex;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.upload-actions .btn {
+  flex: 1;
+}
+
+@media (max-width: 480px) {
+  .upload-form {
+    padding: 24px 20px;
+  }
+
+  .upload-actions {
+    flex-direction: column;
+  }
+}

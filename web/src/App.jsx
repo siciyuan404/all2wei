@@ -1,24 +1,38 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import Login from './pages/Login';
-import MaterialList from './pages/MaterialList';
-import Upload from './pages/Upload';
-import Watch from './pages/Watch';
-import './App.css';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { ToastProvider } from './context/ToastContext';
+import { Loading } from './components/common';
+import './styles/index.css';
 
-// 简单的路由守卫组件
+const Login = lazy(() => import('./pages/Login'));
+const MaterialList = lazy(() => import('./pages/MaterialList'));
+const Upload = lazy(() => import('./pages/Upload'));
+const Watch = lazy(() => import('./pages/Watch'));
+
 function PrivateRoute({ children }) {
-  const token = localStorage.getItem('token');
-  return token ? children : <Navigate to="/login" replace />;
+  const { isAuthenticated, loading } = useAuth();
+  
+  if (loading) {
+    return <Loading fullscreen text="验证身份中..." />;
+  }
+  
+  return isAuthenticated ? children : <Navigate to="/login" replace />;
 }
 
 function PublicRoute({ children }) {
-  const token = localStorage.getItem('token');
-  return !token ? children : <Navigate to="/" replace />;
+  const { isAuthenticated, loading } = useAuth();
+  
+  if (loading) {
+    return <Loading fullscreen text="验证身份中..." />;
+  }
+  
+  return !isAuthenticated ? children : <Navigate to="/" replace />;
 }
 
-function App() {
+function AppRoutes() {
   return (
-    <BrowserRouter>
+    <Suspense fallback={<Loading fullscreen text="加载页面..." />}>
       <Routes>
         <Route
           path="/login"
@@ -52,8 +66,21 @@ function App() {
             </PrivateRoute>
           }
         />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-    </BrowserRouter>
+    </Suspense>
+  );
+}
+
+function App() {
+  return (
+    <AuthProvider>
+      <ToastProvider>
+        <BrowserRouter>
+          <AppRoutes />
+        </BrowserRouter>
+      </ToastProvider>
+    </AuthProvider>
   );
 }
 
